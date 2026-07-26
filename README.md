@@ -11,12 +11,9 @@ Two things have to hold before that is safe rather than reckless, and this repo
 is a worked example of each:
 
 - **`early_commit.py`** — *what "provably final" means in code.* Three
-  structural checks that decide whether a half-arrived value can be acted on, in
-  about ninety lines with no dependencies. Each claim has a test, including the
-  one that catches a `confidence` of `8` that was about to become `87`.
+  structural checks that decide whether a half-arrived value can be acted on.
 - **`probe.py`** — *whether your provider allows it.* One real call to a model,
-  reporting whether the fields arrived in schema order, whether the early verdict
-  matched the finished object, and how much time came off the critical path.
+  reporting whether field order held and what came off the critical path.
 
 Background reading, not required: [Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html)
 
