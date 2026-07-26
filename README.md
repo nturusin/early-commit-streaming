@@ -1,150 +1,118 @@
-# Early commit on a streamed structured LLM response
+# early-commit-streaming
 
-Reference implementation for **[Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html)**
+Act on a streamed LLM response as soon as the decision fields are provably
+final, and drain the explanation in the background.
 
-A structured LLM response can become useful before it becomes complete. If the
-decision fields come first in the schema, an application can act as soon as
-those fields are **provably final** and drain the explanation in the background.
+Put the decision fields first in your structured-output schema and a classifier
+can commit after ~30 tokens instead of ~250. In the system this came from, median
+time-to-act fell from 1.33s to 0.65s — same model, same prompt, same tokens, only
+the field order and the moment of commit changed.
 
-In the system this came from, median time-to-act fell from **1.33s to 0.65s**
-with no change to the model, the prompt, or the number of tokens generated.
-Only the field order and the moment of commit changed.
+Reference implementation for [Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html).
 
-![Two token bars of equal length. In schema A the fields sit in the order they were added and the commit flag points at the closing brace. In schema B both verdict fields sit first and the commit flag points at token 30.](figures/fig2.png)
+## Requirements
 
-## The idea
+Python 3.9+. The parser, tests, and demo use the standard library only.
+`aiohttp` is needed only for `stream_decision`.
 
-Most structured responses serve two audiences:
+## Usage
 
-- the **verdict** — the short decision the application acts on;
-- the **essay** — explanations, citations, audit notes a human may read later.
+```python
+from early_commit import AbortEarlyCommit, DecisionParser
 
-Schemas usually grow in the order product requests arrive, not in order of
-urgency. That is how a second decision field ends up *after* a long explanation,
-which pushes the earliest safe commit point all the way to the closing brace.
+parser = DecisionParser()
 
-![Four cumulative bars, one per schema version. The commit marker stays just after category for v1 to v3, then jumps to the far right in v4 when confidence is appended last.](figures/fig1.png)
+for chunk in stream:                  # whatever your provider yields
+    try:
+        decision = parser.feed(chunk)
+    except AbortEarlyCommit:
+        decision = None               # fall back to the deterministic path
+        break
 
-## Presence is not finality
-
-A partial-JSON parser can tell you a field has appeared. That does not mean its
-value is complete:
-
-```
-{
-  "category": "04_meals",
-  "confidence": 8
+    if decision is not None:
+        act_on(decision.category, decision.confidence)
+        break                         # then drain the rest in the background
 ```
 
-`confidence` is visible, but the next chunk may be `7,` — the real value is
-`87`. Rendering `8` for a moment is harmless. Writing it to a database, routing
-a payment, or triggering an external action is not.
+`feed()` returns `None` until the verdict is provably final, a `Decision` the
+moment it is, and raises `AbortEarlyCommit` if the stream cannot be trusted.
 
-## Three proofs before commit
+Over a network, `stream_client.py` wraps this:
+
+```python
+from stream_client import stream_decision
+
+result = await stream_decision(session, url, payload)
+if result.committed_early:
+    act_on(result.verdict)
+```
+
+## How it works
+
+Committing early is only safe with three structural proofs:
 
 | Proof | Question | Evidence required |
 |---|---|---|
-| **Completion** | Has the value finished arriving? | Closing quote for a string; a terminator (`,` `}` whitespace) for a number |
-| **Membership** | Is it a legal value? | Present in the enum declared in the schema |
-| **Order** | Did the verdict arrive first? | No later field seen before the verdict closed |
+| Completion | Has the value finished arriving? | Closing quote for a string; `,` `}` or whitespace after a number |
+| Membership | Is it a legal value? | Present in the enum declared in the schema |
+| Order | Did the verdict arrive first? | No later field seen before the verdict closed |
 
-![Three buffers with their structural evidence and outcome: a terminated verdict commits, an unterminated number waits, an essay field before the verdict aborts.](figures/fig3.png)
+Completion is the one that bites. A partial-JSON parser will happily tell you
+`confidence` has arrived here:
 
-Two rules make the difference between a parse and a guess:
+```
+{"category": "04_meals", "confidence": 8
+```
 
-1. **Parse the accumulated buffer, never an individual frame.** Chunk
-   boundaries are a transport detail. A frame may end inside a string, after the
-   first digit of a number, or just before the comma that proves it finished.
-2. **Check order only after attempting the match.** One frame can carry both the
-   end of the verdict and the start of the essay; checking order first would
-   reject a perfectly valid stream.
+The next chunk may be `7,`, making the real value `87`. Rendering `8` for a
+moment is harmless; writing it to a database or routing on it is not.
 
-If any proof fails, abort the early path and fall back to the deterministic
-pipeline. A missing prediction is recoverable; a confidently misparsed one is not.
+Hence two rules: **parse the accumulated buffer, never an individual frame**
+(chunk boundaries are a transport detail), and **check order only after
+attempting the match** (one frame can carry both the end of the verdict and the
+start of the explanation).
+
+If any proof fails, abort and fall back. A missing prediction is recoverable; a
+confidently misparsed one is not.
+
+![Two token bars of equal length. In schema A the fields sit in the order they were added and the commit flag points at the closing brace. In schema B both verdict fields sit first and the commit flag points at token 30.](figures/fig2.png)
 
 ## Over the network
 
-`demo.py` replays a string. A socket is less tidy: there are **two** framings
-between you and a JSON value, and neither respects the other.
+A socket re-cuts the data twice: TCP reads split `data:` lines, and SSE events
+carry text fragments that split JSON values. Neither boundary relates to where
+values begin and end, which is why the parser buffers. `iter_sse_data` accepts
+any async iterator of bytes, so the reassembly is testable without a network.
 
-1. **Bytes → SSE events.** TCP reads land wherever they land, so a single
-   `data: {...}` line can arrive split across two reads.
-2. **SSE events → JSON values.** Each event carries a fragment of generated
-   text, and a string, number, or key can straddle any number of them.
-
-By the time a chunk reaches your code it has been re-cut twice, and neither cut
-has anything to do with where values begin and end. That is the practical reason
-the parser accumulates a buffer instead of trusting a frame.
-
-`stream_client.py` shows the shape: `iter_sse_data` reassembles lines from a
-byte buffer, `read_verdict` feeds the parser and keeps draining afterwards, and
-`stream_decision` is a thin aiohttp binding. Two timeout choices matter in
-production:
-
-- Bound the **socket read**, not the total request — the generation is not
-  time-bounded; a stalled connection is the failure you care about.
-- Keep that bound well above the server's keepalive interval, or a normal idle
-  gap looks like a stall.
-
-Separately, put a hard deadline on the **verdict** and fall back to the
-deterministic path when it expires.
-
-## Run it
-
-The parser, the tests, and the demo are standard library only. `aiohttp` is
-needed only for `stream_decision`; the streaming tests fake the transport, so
-they run without it.
-
-```bash
-python3 test_early_commit.py   # structural proofs, including the 8 -> 87 case
-python3 test_stream_client.py  # SSE reassembly and early commit over a stream
-python3 demo.py                # field order vs. time-to-act
-```
-
-`demo.py` replays a synthetic response at a fixed token rate. Same bytes, same
-token count — only the field order differs:
-
-```
-schema A - verdict split around the essay (confidence last)
-  early commit              not possible (essay field arrived before the verdict)
-  time to act                0.65s
-  removed from critical path 0%
-
-schema B - verdict first
-  time to act                0.33s
-  time to complete           0.65s
-  removed from critical path 49%
-```
-
-This is a **mechanism demo, not a benchmark**. Your ratio depends on the model,
-the provider, and above all the ratio of verdict tokens to essay tokens.
+Bound the socket read rather than the total request — a stalled connection is
+the real failure — and keep that bound above the server's keepalive interval.
+Put a separate hard deadline on the verdict itself.
 
 ## Files
 
 | File | What it is |
 |---|---|
-| `early_commit.py` | The parser: three proofs, ~90 lines |
+| `early_commit.py` | The parser: three proofs |
 | `stream_client.py` | SSE reassembly, draining, and the aiohttp binding |
-| `test_early_commit.py` | Structural tests, including one that feeds the payload a character at a time |
-| `test_stream_client.py` | Stream tests over a faked transport, down to one byte per read |
 | `demo.py` | Simulated stream comparing both field orders |
-| `schema.json` | Example structured-output schema with the verdict fields first |
+| `schema.json` | Example schema with the verdict fields first |
+| `test_early_commit.py` | Structural tests, including the `8` → `87` case |
+| `test_stream_client.py` | Stream tests over a faked transport, down to one byte per read |
 
-## Applying it
+## Tests
 
-1. Split your fields into a verdict and an essay.
-2. Put the verdict first in the schema, and confirm your provider preserves
-   field order while streaming.
-3. Parse the accumulated buffer; require completion, membership, and order.
-4. Commit, then drain the remainder in a bounded background worker.
-5. Verify the finished object still agrees with what you committed.
-6. Keep a deterministic fallback and a hard deadline on the verdict.
-7. Re-check application state before storing the essay — a human may have
-   overridden the decision while the stream was still open.
+```bash
+python3 test_early_commit.py    # 8 tests
+python3 test_stream_client.py   # 6 tests
+python3 demo.py                 # field order vs. time-to-act
+```
 
-![Timeline: at 0.65s the model commits, at 0.90s a human overrides it, at 1.33s the explanation finishes, at 1.34s the stale explanation is discarded.](figures/fig4-override.png)
+`demo.py` replays a synthetic response at a fixed token rate. Same bytes and
+same token count either way: the verdict-first schema removes about half the
+wait, the other cannot commit early at all. Your own ratio depends mostly on
+how many explanation tokens follow the verdict.
 
-## When not to bother
+## When not to use it
 
 - The verdict cannot be made self-contained and structurally final.
 - Your provider cannot give you constrained, ordered streaming.
@@ -153,8 +121,8 @@ the provider, and above all the ratio of verdict tokens to essay tokens.
 
 ## Provider documentation
 
-Verify schema enforcement, field ordering, and chunk behaviour on the exact
-model and API path you ship — these details vary and change.
+Field ordering and streaming behaviour vary by provider and change over time.
+Verify both on the exact model and API path you ship.
 
 - OpenAI — [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) · [Streaming Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
 - Anthropic — [Structured Outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) · [Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
