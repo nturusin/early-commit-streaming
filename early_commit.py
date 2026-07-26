@@ -29,6 +29,7 @@ CATEGORY_ENUM = frozenset(
         "06_office",
         "07_professional_services",
         "08_personal",
+        "09_general_purchase",
     }
 )
 

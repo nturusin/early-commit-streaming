@@ -12,8 +12,9 @@ Reference implementation for [Act on the Verdict. Stream the Rest.](https://ntur
 
 ## Requirements
 
-Python 3.9+. The parser, tests, and demo use the standard library only.
-`aiohttp` is needed only for `stream_decision`.
+Python 3.9+. The parser, the tests, and the demo use the standard library only.
+Optional: `google-genai` to run the probe against Vertex AI, `aiohttp` for
+`stream_decision`.
 
 ## Usage
 
@@ -36,6 +37,10 @@ for chunk in stream:                  # whatever your provider yields
 
 `feed()` returns `None` until the verdict is provably final, a `Decision` the
 moment it is, and raises `AbortEarlyCommit` if the stream cannot be trusted.
+
+This is a worked example rather than a library: `DECISION_RE` hardcodes the two
+field names, so adapting it to your schema means editing that regex and the
+enum. It is about ninety lines — read it before you use it.
 
 Over a network, `stream_client.py` wraps this:
 
@@ -75,6 +80,42 @@ start of the explanation).
 If any proof fails, abort and fall back. A missing prediction is recoverable; a
 confidently misparsed one is not.
 
+## Measure it on your own stack
+
+The technique rests on an assumption nobody guarantees: that your provider emits
+fields in the order your schema declares them, and streams them incrementally.
+`run_probe.py` checks that against a real model and reports what early commit
+would buy you.
+
+```bash
+pip install google-genai
+gcloud auth application-default login
+python3 run_probe.py --project YOUR_PROJECT --runs 20
+```
+
+```
+  field order declared   ['category', 'confidence', 'customer_friendly_explanation', ...]
+  field order observed   ['category', 'confidence', 'customer_friendly_explanation', ...]
+  order held             yes
+
+  early verdict          04_meals @ 87.0
+  final verdict          04_meals @ 87.0
+  agreed                 yes
+
+  time to act            0.38s  (after 82 of 95 chars)
+  time to complete       0.90s
+  removed from path      0.52s  (58%)
+```
+
+Three of those lines matter more than the timings. **order held** tells you the
+technique is viable at all. **agreed** tells you the early verdict matched the
+completed object — the check that has to hold every time, not on average. A
+single run tells you whether it works; use `--runs` for a sense of the spread.
+
+Gemini on Vertex AI is implemented because it is the stack the article's numbers
+came from. A different provider is one async generator of
+`(elapsed, text_fragment)` events in `providers.py`; nothing else changes.
+
 ## Over the network
 
 A socket re-cuts the data twice: TCP reads split `data:` lines, and SSE events
@@ -92,23 +133,27 @@ Put a separate hard deadline on the verdict itself.
 |---|---|
 | `early_commit.py` | The parser: three proofs |
 | `stream_client.py` | SSE reassembly, draining, and the aiohttp binding |
+| `probe.py` | Turns a timed stream into a report: order, agreement, saving |
+| `providers.py` | Provider adapters; Gemini on Vertex AI is implemented |
+| `run_probe.py` | CLI for the probe |
 | `demo.py` | Simulated stream comparing both field orders |
-| `schema.json` | Example schema with the verdict fields first |
+| `schema.json` | The schema used by the probe, verdict fields first |
 | `test_early_commit.py` | Structural tests, including the `8` → `87` case |
 | `test_stream_client.py` | Stream tests over a faked transport, down to one byte per read |
+| `test_probe.py` | Reporting tests, including a provider that reorders fields |
 
 ## Tests
 
 ```bash
 python3 test_early_commit.py    # 8 tests
 python3 test_stream_client.py   # 6 tests
+python3 test_probe.py           # 6 tests
 python3 demo.py                 # field order vs. time-to-act
 ```
 
-`demo.py` replays a synthetic response at a fixed token rate. Same bytes and
-same token count either way: the verdict-first schema removes about half the
-wait, the other cannot commit early at all. Your own ratio depends mostly on
-how many explanation tokens follow the verdict.
+`demo.py` replays a synthetic response at a fixed token rate. It is an
+illustration, not a measurement — the numbers it prints follow from constants
+at the top of the file. For evidence, run the probe against a real model.
 
 ## When not to use it
 
