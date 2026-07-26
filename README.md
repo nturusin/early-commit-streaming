@@ -7,6 +7,19 @@ In the classifier this came from, median time-to-act fell from **1.33s to 0.65s*
 — same model, same prompt, same number of tokens. Only the field order and the
 moment of commit changed.
 
+Two things have to hold before that is safe rather than reckless, and this repo
+is a worked example of each:
+
+- **`early_commit.py`** — *what "provably final" means in code.* Three
+  structural checks that decide whether a half-arrived value can be acted on, in
+  about ninety lines with no dependencies. Each claim has a test, including the
+  one that catches a `confidence` of `8` that was about to become `87`.
+- **`probe.py`** — *whether your provider allows it.* One real call to a model,
+  reporting whether the fields arrived in schema order, whether the early verdict
+  matched the finished object, and how much time came off the critical path.
+
+Background reading, not required: [Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html)
+
 ## The problem
 
 A structured response usually serves two audiences at once. Here is one from a
@@ -32,12 +45,6 @@ tokens before it can do anything with the first 30. The fix is not a second
 model call or a shorter response. It is to put the verdict first in the schema
 and act the moment those fields are provably final, letting the essay finish in
 the background.
-
-Two things make that safe rather than reckless, and this repo covers both:
-**what "provably final" means in code**, and **whether your provider actually
-behaves the way the technique requires**.
-
-Background reading, not required: [Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html)
 
 ## Install
 
