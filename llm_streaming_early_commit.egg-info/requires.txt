@@ -1,0 +1,3 @@
+
+[probe]
+google-genai==1.66.0

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["early_commit", "probe"]
+
+[project]
+name = "llm-streaming-early-commit"
+version = "1.0.0"
+description = "Act on a streamed LLM response as soon as the decision fields are provably final."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Nikolai Turusin" }]
+requires-python = ">=3.9"
+
+# The parser and its tests need nothing. Dependencies are only for the probe,
+# which talks to a real provider.
+dependencies = []
+
+[project.optional-dependencies]
+# Pinned to the version this was written and checked against.
+probe = ["google-genai==1.66.0"]
+
+[project.urls]
+Article = "https://nturusin.github.io/act-on-the-verdict.html"
+Source = "https://github.com/nturusin/llm-streaming-early-commit"
+
+[tool.pytest.ini_options]
+python_files = ["test_*.py"]
