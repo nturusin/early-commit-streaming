@@ -1,16 +1,43 @@
 # llm-streaming-early-commit
 
-Act on a streamed LLM response as soon as the decision fields are provably
-final, and drain the explanation in the background.
+**Act on a streamed LLM response as soon as the decision fields are provably
+final, instead of waiting for the closing brace.**
 
-Put the decision fields first in your structured-output schema and a classifier
-can commit after ~30 tokens instead of ~250. In the system this came from, median
-time-to-act fell from 1.33s to 0.65s — same model, same prompt, same tokens, only
-the field order and the moment of commit changed.
+In the classifier this came from, median time-to-act fell from **1.33s to 0.65s**
+— same model, same prompt, same number of tokens. Only the field order and the
+moment of commit changed.
 
-Companion code for [Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html).
-It answers two questions: **what does "provably final" look like in code**, and
-**does it hold on your provider**.
+## The problem
+
+A structured response usually serves two audiences at once. Here is one from a
+transaction classifier:
+
+```json
+{
+  "category": "04_meals",
+  "confidence": 87,
+  "customer_friendly_explanation": "Lunch was a working meal, so it is recorded against meals and entertainment.",
+  "internal_explanation": "Counterparty and amount are consistent with a working meal, allowable where incurred wholly for the trade.",
+  "citation": "Internal bookkeeping guidance, meals and subsistence."
+}
+```
+
+The first two fields are the **verdict**: `category` is written to the
+transaction, `confidence` decides whether a human reviews it. They arrive in
+roughly the first 30 tokens. The other three are the **essay** — another ~220
+tokens of prose that a person might read later, or never.
+
+Treat the response as one atomic result and the application waits for all 250
+tokens before it can do anything with the first 30. The fix is not a second
+model call or a shorter response. It is to put the verdict first in the schema
+and act the moment those fields are provably final, letting the essay finish in
+the background.
+
+Two things make that safe rather than reckless, and this repo covers both:
+**what "provably final" means in code**, and **whether your provider actually
+behaves the way the technique requires**.
+
+Background reading, not required: [Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html)
 
 ## Install
 
@@ -24,7 +51,7 @@ pip install -e .            # parser only, no dependencies
 pip install -e '.[probe]'   # adds google-genai==1.66.0 to run the probe
 ```
 
-## 1. What "provably final" looks like
+## 1. What "provably final" means
 
 ```python
 from early_commit import AbortEarlyCommit, DecisionParser
@@ -44,8 +71,7 @@ for chunk in stream:                  # whatever your provider yields
 
 `feed()` returns `None` until the verdict is provably final, a `Decision` the
 moment it is, and raises `AbortEarlyCommit` if the stream cannot be trusted.
-
-Committing early is only safe with three structural proofs:
+It demands three structural proofs before committing:
 
 | Proof | Question | Evidence required |
 |---|---|---|
@@ -66,17 +92,17 @@ moment is harmless; writing it to a database or routing on it is not.
 Two rules follow: **parse the accumulated buffer, never an individual frame**
 (chunk boundaries are a transport detail), and **check order only after
 attempting the match** (one frame can carry the end of the verdict and the start
-of the explanation). If any proof fails, abort and fall back — a missing
-prediction is recoverable, a confidently misparsed one is not.
+of the essay). If any proof fails, abort and fall back — a missing prediction is
+recoverable, a confidently misparsed one is not.
 
 `early_commit.py` is about ninety lines and hardcodes the two field names in
 `DECISION_RE`. It is a worked example to adapt, not a library to depend on.
 
-## 2. Does it hold on your provider?
+## 2. Whether your provider allows it
 
 Nothing guarantees that a provider emits fields in the order your schema
-declares them, or streams them incrementally. The probe checks, against a real
-model:
+declares them, or streams them incrementally. The probe checks against a real
+model and reports what early commit would have bought:
 
 ```bash
 gcloud auth application-default login
@@ -98,11 +124,11 @@ python3 probe.py --project YOUR_PROJECT --runs 20
 
 `order held` says whether the technique is viable at all. `agreed with final`
 says the early verdict matched the completed object — that must hold every time,
-not on average. The timings are the least interesting lines: your ratio depends
-mostly on how many explanation tokens follow the verdict.
+not on average. The timings matter least: your ratio depends mostly on how many
+essay tokens follow the verdict.
 
-Gemini on Vertex AI is implemented because it is the stack the article's numbers
-came from. Another provider is one function — an async generator of
+Gemini on Vertex AI is implemented because it is the stack the measurements came
+from. Another provider is one function — an async generator of
 `(seconds_since_request, text_fragment)` events.
 
 ## Tests
