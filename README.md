@@ -62,12 +62,42 @@ Two rules make the difference between a parse and a guess:
 If any proof fails, abort the early path and fall back to the deterministic
 pipeline. A missing prediction is recoverable; a confidently misparsed one is not.
 
+## Over the network
+
+`demo.py` replays a string. A socket is less tidy: there are **two** framings
+between you and a JSON value, and neither respects the other.
+
+1. **Bytes → SSE events.** TCP reads land wherever they land, so a single
+   `data: {...}` line can arrive split across two reads.
+2. **SSE events → JSON values.** Each event carries a fragment of generated
+   text, and a string, number, or key can straddle any number of them.
+
+By the time a chunk reaches your code it has been re-cut twice, and neither cut
+has anything to do with where values begin and end. That is the practical reason
+the parser accumulates a buffer instead of trusting a frame.
+
+`stream_client.py` shows the shape: `iter_sse_data` reassembles lines from a
+byte buffer, `read_verdict` feeds the parser and keeps draining afterwards, and
+`stream_decision` is a thin aiohttp binding. Two timeout choices matter in
+production:
+
+- Bound the **socket read**, not the total request — the generation is not
+  time-bounded; a stalled connection is the failure you care about.
+- Keep that bound well above the server's keepalive interval, or a normal idle
+  gap looks like a stall.
+
+Separately, put a hard deadline on the **verdict** and fall back to the
+deterministic path when it expires.
+
 ## Run it
 
-No dependencies beyond the standard library.
+The parser, the tests, and the demo are standard library only. `aiohttp` is
+needed only for `stream_decision`; the streaming tests fake the transport, so
+they run without it.
 
 ```bash
-python3 test_early_commit.py   # structural tests, including the 8 -> 87 case
+python3 test_early_commit.py   # structural proofs, including the 8 -> 87 case
+python3 test_stream_client.py  # SSE reassembly and early commit over a stream
 python3 demo.py                # field order vs. time-to-act
 ```
 
@@ -94,7 +124,9 @@ the provider, and above all the ratio of verdict tokens to essay tokens.
 | File | What it is |
 |---|---|
 | `early_commit.py` | The parser: three proofs, ~90 lines |
+| `stream_client.py` | SSE reassembly, draining, and the aiohttp binding |
 | `test_early_commit.py` | Structural tests, including one that feeds the payload a character at a time |
+| `test_stream_client.py` | Stream tests over a faked transport, down to one byte per read |
 | `demo.py` | Simulated stream comparing both field orders |
 | `schema.json` | Example structured-output schema with the verdict fields first |
 
