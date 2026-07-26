@@ -167,14 +167,28 @@ They run offline. The one piece with no coverage is the network call itself,
 
 ## Provider documentation
 
-Field ordering and streaming behaviour vary by provider and change over time.
-Verify both on the exact model and API path you ship.
+Field ordering and streaming behaviour vary by provider and change over time, so
+the list below is where to look and what to ask — not a set of guarantees. The
+only answer that counts comes from the model and API path you ship.
 
-- OpenAI — [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) · [Streaming Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
-- Anthropic — [Structured Outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) · [Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
-- Google Gemini — [Structured Outputs](https://ai.google.dev/gemini-api/docs/structured-output)
-- Amazon Bedrock — [Structured Outputs](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html)
-- vLLM — [Structured Outputs](https://docs.vllm.ai/en/latest/features/structured_outputs/)
+- **OpenAI** — [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) · [Streaming Responses](https://developers.openai.com/api/docs/guides/streaming-responses)
+  Does your schema's key order survive into the response, and can function-call
+  arguments be read while they are still being generated?
+- **Anthropic** — [Structured Outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs) · [Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
+  Are object properties emitted in their declared order, and how do required and
+  optional properties interact with that order?
+- **Google Gemini** — [Structured Outputs](https://ai.google.dev/gemini-api/docs/structured-output)
+  Do the streamed partial JSON strings concatenate into the final object, and are
+  fields produced in schema-key order?
+- **Amazon Bedrock** — [Structured Outputs](https://docs.aws.amazon.com/bedrock/latest/userguide/structured-output.html)
+  Which streaming paths expose structured output for your model — `ConverseStream`,
+  `InvokeModelWithResponseStream` — and with what constraints?
+- **vLLM** — [Structured Outputs](https://docs.vllm.ai/en/latest/features/structured_outputs/)
+  Which constraint types does your build support — schema, grammar, regex, choice
+  — and do they hold while streaming?
+
+`probe.py` answers the first two questions for Gemini on Vertex AI. Porting the
+adapter answers them for anything else.
 
 ## Licence
 
