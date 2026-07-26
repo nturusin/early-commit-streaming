@@ -12,8 +12,9 @@ is a worked example of each:
 
 - **`early_commit.py`** — *what "provably final" means in code.* Three
   structural checks that decide whether a half-arrived value can be acted on.
-- **`probe.py`** — *whether your provider allows it.* One real call to a model,
-  reporting whether field order held and what came off the critical path.
+- **`probe.py`** — *whether your provider allows it.* A real call to **Gemini on
+  Vertex AI**, reporting whether field order held and what came off the critical
+  path.
 
 Background reading, not required: [Act on the Verdict. Stream the Rest.](https://nturusin.github.io/act-on-the-verdict.html)
 
@@ -51,9 +52,11 @@ Python 3.9+. The parser and the tests need no dependencies at all.
 git clone https://github.com/nturusin/llm-streaming-early-commit
 cd llm-streaming-early-commit
 
-pip install -e .            # parser only, no dependencies
-pip install -e '.[probe]'   # adds google-genai==1.66.0 to run the probe
+pip install -e .            # parser and tests only, no dependencies
+pip install -e '.[probe]'   # + google-genai==1.66.0, to run the probe on Vertex AI
 ```
+
+The probe additionally needs Google Cloud access — see [section 2](#2-whether-your-provider-allows-it).
 
 ## 1. What "provably final" means
 
@@ -106,12 +109,24 @@ recoverable, a confidently misparsed one is not.
 
 Nothing guarantees that a provider emits fields in the order your schema
 declares them, or streams them incrementally. The probe checks against a real
-model and reports what early commit would have bought:
+model and reports what early commit would have bought.
+
+The provider implemented here is **Gemini on Vertex AI**, because that is the
+stack the measurements came from. To run it you need:
+
+- a **Google Cloud project** with the **Vertex AI API** enabled and billing active;
+- the **`gcloud` CLI**, authenticated for application default credentials;
+- permission to call Vertex AI on that project — `roles/aiplatform.user` or equivalent;
+- a **region that serves your model**; `--location` defaults to `europe-west2`,
+  and `--model` to `gemini-flash-latest`.
 
 ```bash
+pip install -e '.[probe]'
 gcloud auth application-default login
 python3 probe.py --project YOUR_PROJECT --runs 20
 ```
+
+Each run is one short model call, so the command above bills for twenty of them.
 
 ```
   field order declared   category, confidence, customer_friendly_explanation, internal_explanation, citation
@@ -129,9 +144,8 @@ says the early verdict matched the completed object — that must hold every tim
 not on average. The timings matter least: your ratio depends mostly on how many
 essay tokens follow the verdict.
 
-Gemini on Vertex AI is implemented because it is the stack the measurements came
-from. Another provider is one function — an async generator of
-`(seconds_since_request, text_fragment)` events.
+Another provider is one more function — an async generator of
+`(seconds_since_request, text_fragment)` events. Nothing else in the repo changes.
 
 ## Tests
 

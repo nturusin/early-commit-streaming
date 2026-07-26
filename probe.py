@@ -8,15 +8,17 @@ This probe checks that against a real model and reports:
     agreed       did the early verdict match the completed object?
     time to act  when did the verdict become structurally final?
 
-Run it:
+The provider implemented here is Gemini on Vertex AI, the stack the article's
+numbers came from. It needs a Google Cloud project with the Vertex AI API
+enabled, billing active, `roles/aiplatform.user` on that project, and a region
+that serves the model you pick.
 
     pip install -e '.[probe]'
     gcloud auth application-default login
     python3 probe.py --project YOUR_PROJECT --runs 20
 
-Gemini on Vertex AI is implemented because it is the stack the article's numbers
-came from. Another provider means writing one more `stream_*` function: an async
-generator of (seconds_since_request, text_fragment) events. Nothing else changes.
+Another provider means writing one more `stream_*` function: an async generator
+of (seconds_since_request, text_fragment) events. Nothing else changes.
 """
 
 from __future__ import annotations
