@@ -75,8 +75,6 @@ start of the explanation).
 If any proof fails, abort and fall back. A missing prediction is recoverable; a
 confidently misparsed one is not.
 
-![Two token bars of equal length. In schema A the fields sit in the order they were added and the commit flag points at the closing brace. In schema B both verdict fields sit first and the commit flag points at token 30.](figures/fig2.png)
-
 ## Over the network
 
 A socket re-cuts the data twice: TCP reads split `data:` lines, and SSE events
