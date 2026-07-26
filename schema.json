@@ -1,0 +1,11 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "category":   { "type": "string", "enum": ["01_income_employment", "...", "08_personal"] },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+    "customer_friendly_explanation": { "type": "string" },
+    "internal_explanation": { "type": "string" },
+    "citation": { "type": "string" }
+  }
+}
