@@ -10,13 +10,13 @@ This probe checks that against a real model and reports:
 
 Run it:
 
-    pip install google-genai
+    pip install -e '.[probe]'
     gcloud auth application-default login
     python3 probe.py --project YOUR_PROJECT --runs 20
 
 Gemini on Vertex AI is implemented because it is the stack the article's numbers
-came from. Another provider is one function: an async generator of
-(seconds_since_request, text_fragment) events. Nothing else changes.
+came from. Another provider means writing one more `stream_*` function: an async
+generator of (seconds_since_request, text_fragment) events. Nothing else changes.
 """
 
 from __future__ import annotations
@@ -26,16 +26,20 @@ import asyncio
 import json
 import statistics
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Any, Optional
 
-from early_commit import AbortEarlyCommit, CATEGORY_ENUM, Decision, DecisionParser
+from early_commit import CATEGORY_ENUM, AbortEarlyCommit, Decision, DecisionParser
 
+# (seconds since the request was sent, fragment of generated text)
 Event = tuple[float, str]
 
+
+# --- what we ask for --------------------------------------------------------
+
 # The verdict fields come first. That ordering is the whole intervention.
-SCHEMA = {
+SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "category": {"type": "string", "enum": sorted(CATEGORY_ENUM)},
@@ -52,7 +56,7 @@ SCHEMA = {
         "citation",
     ],
 }
-SCHEMA_FIELD_ORDER = list(SCHEMA["properties"])
+SCHEMA_FIELD_ORDER: list[str] = list(SCHEMA["properties"])
 
 PROMPT = """You categorise bank transactions for a small business.
 
@@ -102,6 +106,8 @@ async def stream_gemini_vertex(
 
 @dataclass(frozen=True)
 class Report:
+    """One run, seen from the outside."""
+
     observed_order: list[str]
     early_verdict: Optional[Decision]
     final_verdict: Optional[Decision]
@@ -119,114 +125,164 @@ class Report:
 
     @property
     def seconds_saved(self) -> float:
-        return 0.0 if self.verdict_at is None else self.complete_at - self.verdict_at
+        if self.verdict_at is None:
+            return 0.0
+        return self.complete_at - self.verdict_at
 
     @property
     def fraction_saved(self) -> float:
-        if self.verdict_at is None or self.complete_at <= 0:
+        if self.complete_at <= 0:
             return 0.0
         return self.seconds_saved / self.complete_at
 
 
 def analyse(events: Iterable[Event]) -> Report:
-    """Replay timed stream events and report what early commit would have bought.
+    """Replay timed events and report what early commit would have bought.
 
-    Pure function, so the reporting is testable without a network.
+    A pure function, so the reporting is testable without a network.
     """
     parser = DecisionParser()
-    early: Optional[Decision] = None
-    aborted: Optional[str] = None
-    verdict_at: Optional[float] = None
     fragments: list[str] = []
+    commit: Optional[tuple[Decision, float]] = None  # (verdict, seconds)
+    aborted: Optional[str] = None
     complete_at = 0.0
 
     for elapsed, fragment in events:
         complete_at = elapsed
         fragments.append(fragment)
 
-        if early is not None or aborted is not None:
-            continue
+        if commit is not None or aborted is not None:
+            continue  # already decided; keep reading to time the full response
+
         try:
-            early = parser.feed(fragment)
+            verdict = parser.feed(fragment)
         except AbortEarlyCommit as exc:
             aborted = str(exc)
-            continue
-        if early is not None:
-            verdict_at = elapsed
+        else:
+            if verdict is not None:
+                commit = (verdict, elapsed)
 
-    observed_order: list[str] = []
-    final: Optional[Decision] = None
+    observed_order, final_verdict = _parse_completed("".join(fragments))
+
+    return Report(
+        observed_order=observed_order,
+        early_verdict=commit[0] if commit else None,
+        final_verdict=final_verdict,
+        verdict_at=commit[1] if commit else None,
+        complete_at=complete_at,
+        aborted=aborted,
+    )
+
+
+def _parse_completed(body: str) -> tuple[list[str], Optional[Decision]]:
+    """Field order and verdict of the finished response, if it parsed at all."""
     try:
-        body = json.loads("".join(fragments))
-        observed_order = list(body)
-        final = Decision(body["category"], float(body["confidence"]))
+        parsed = json.loads(body)
+        return list(parsed), Decision(parsed["category"], float(parsed["confidence"]))
     except (ValueError, KeyError, TypeError):
-        pass
+        return [], None
 
-    return Report(observed_order, early, final, verdict_at, complete_at, aborted)
+
+# --- printing ---------------------------------------------------------------
+
+
+def _rows_to_text(rows: Sequence[tuple[str, object]]) -> str:
+    """Render (label, value) pairs as an aligned block."""
+    width = max(len(label) for label, _ in rows)
+    return "\n".join(f"  {label:<{width}}   {value}" for label, value in rows)
 
 
 def format_report(report: Report, model: str) -> str:
-    lines = [
-        f"\nmodel: {model}\n",
-        f"  field order declared   {SCHEMA_FIELD_ORDER}",
-        f"  field order observed   {report.observed_order or '(response was not valid JSON)'}",
-        f"  order held             {'yes' if report.order_held else 'NO'}\n",
+    """The single-run view."""
+    rows: list[tuple[str, object]] = [
+        ("field order declared", ", ".join(SCHEMA_FIELD_ORDER)),
+        ("field order observed", ", ".join(report.observed_order) or "(not valid JSON)"),
+        ("order held", "yes" if report.order_held else "NO"),
     ]
 
     if report.aborted:
-        lines.append(f"  early commit           aborted: {report.aborted}")
+        rows.append(("early commit", f"aborted: {report.aborted}"))
     elif report.early_verdict is None:
-        lines.append("  early commit           never became structurally final")
+        rows.append(("early commit", "never became structurally final"))
     else:
-        lines.append(f"  early verdict          {report.early_verdict.category} @ {report.early_verdict.confidence}")
-        lines.append(f"  agreed with final      {'yes' if report.agreed else 'NO - DO NOT SHIP THIS'}\n")
-        lines.append(f"  time to act            {report.verdict_at:.2f}s")
-        lines.append(f"  time to complete       {report.complete_at:.2f}s")
-        lines.append(f"  removed from path      {report.seconds_saved:.2f}s ({report.fraction_saved * 100:.0f}%)")
+        verdict = report.early_verdict
+        rows += [
+            ("early verdict", f"{verdict.category} @ {verdict.confidence}"),
+            ("agreed with final", "yes" if report.agreed else "NO - DO NOT SHIP THIS"),
+            ("time to act", f"{report.verdict_at:.2f}s"),
+            ("time to complete", f"{report.complete_at:.2f}s"),
+            (
+                "removed from path",
+                f"{report.seconds_saved:.2f}s ({report.fraction_saved * 100:.0f}%)",
+            ),
+        ]
 
-    return "\n".join(lines) + "\n"
+    return f"\nmodel: {model}\n\n{_rows_to_text(rows)}\n"
+
+
+def format_progress(run: int, total: int, report: Report) -> str:
+    """One line per run, for multi-run mode."""
+    verdict = "ok" if report.order_held and report.agreed else "PROBLEM"
+    return (
+        f"run {run}/{total}: {verdict:<7} "
+        f"complete {report.complete_at:.2f}s  "
+        f"saved {report.fraction_saved * 100:.0f}%"
+    )
+
+
+def format_summary(reports: Sequence[Report]) -> str:
+    """The aggregate view. The two counts matter more than the timings."""
+    committed = [r.verdict_at for r in reports if r.verdict_at is not None]
+    rows: list[tuple[str, object]] = [
+        ("runs", len(reports)),
+        ("order held", f"{sum(r.order_held for r in reports)}/{len(reports)}"),
+        ("early verdict agreed", f"{sum(r.agreed for r in reports)}/{len(reports)}"),
+    ]
+    if committed:
+        rows.append(("median time to act", f"{statistics.median(committed):.2f}s"))
+    rows.append(
+        ("median time to complete", f"{statistics.median(r.complete_at for r in reports):.2f}s")
+    )
+    return "\n" + _rows_to_text(rows) + "\n"
 
 
 # --- cli --------------------------------------------------------------------
 
 
-async def main() -> None:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure early commit against a real provider.")
     parser.add_argument("--project", required=True, help="GCP project id")
     parser.add_argument("--location", default="europe-west2")
     parser.add_argument("--model", default="gemini-flash-latest")
     parser.add_argument("--transaction", default=DEFAULT_TRANSACTION)
     parser.add_argument("--runs", type=int, default=1)
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    reports = []
-    for run in range(args.runs):
-        events = [
-            event
-            async for event in stream_gemini_vertex(
-                args.project, args.location, args.model, args.transaction
-            )
-        ]
-        report = analyse(events)
+
+async def run_once(args: argparse.Namespace) -> Report:
+    events = [
+        event
+        async for event in stream_gemini_vertex(
+            args.project, args.location, args.model, args.transaction
+        )
+    ]
+    return analyse(events)
+
+
+async def main() -> None:
+    args = parse_args()
+    reports: list[Report] = []
+
+    for run in range(1, args.runs + 1):
+        report = await run_once(args)
         reports.append(report)
-
         if args.runs == 1:
             print(format_report(report, args.model))
         else:
-            ok = report.order_held and report.agreed
-            print(
-                f"run {run + 1}/{args.runs}: {'ok' if ok else 'PROBLEM'}  "
-                f"complete {report.complete_at:.2f}s  saved {report.fraction_saved * 100:.0f}%"
-            )
+            print(format_progress(run, args.runs, report))
 
     if args.runs > 1:
-        acted = [r.verdict_at for r in reports if r.verdict_at is not None]
-        print(f"\n  order held             {sum(r.order_held for r in reports)}/{len(reports)}")
-        print(f"  early verdict agreed   {sum(r.agreed for r in reports)}/{len(reports)}")
-        if acted:
-            print(f"  median time to act     {statistics.median(acted):.2f}s")
-        print(f"  median time to complete {statistics.median(r.complete_at for r in reports):.2f}s")
+        print(format_summary(reports))
 
 
 if __name__ == "__main__":

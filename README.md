@@ -110,13 +110,11 @@ python3 probe.py --project YOUR_PROJECT --runs 20
 ```
 
 ```
-  field order declared   ['category', 'confidence', 'customer_friendly_explanation', ...]
-  field order observed   ['category', 'confidence', 'customer_friendly_explanation', ...]
+  field order declared   category, confidence, customer_friendly_explanation, internal_explanation, citation
+  field order observed   category, confidence, customer_friendly_explanation, internal_explanation, citation
   order held             yes
-
   early verdict          04_meals @ 87.0
   agreed with final      yes
-
   time to act            0.38s
   time to complete       0.90s
   removed from path      0.52s (58%)
