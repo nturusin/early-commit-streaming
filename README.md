@@ -79,14 +79,14 @@ It demands three structural proofs before committing:
 | Membership | Is it a legal value? | Present in the enum declared in the schema |
 | Order | Did the verdict arrive first? | No later field seen before the verdict closed |
 
-Completion is the one that bites. A partial-JSON parser will happily tell you
-`confidence` has arrived here:
+Completion is the one that bites. A partial-JSON parser will tell you
+`confidence` has arrived here —
 
 ```
 {"category": "04_meals", "confidence": 8
 ```
 
-The next chunk may be `7,`, making the real value `87`. Rendering `8` for a
+— but the next chunk may be `7,`, making the real value `87`. Rendering `8` for a
 moment is harmless; writing it to a database or routing on it is not.
 
 Two rules follow: **parse the accumulated buffer, never an individual frame**
